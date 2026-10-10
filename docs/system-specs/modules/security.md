@@ -32,11 +32,28 @@ Every writer publishes the store by rename, so
 the seal is its DIRECTORY: the file-tool gate denies writes under
 `mcp-launch-approvals/`, and the OS sandbox mounts that precreated directory
 read-only with a strict no-symlink check. Empty and absent forms both approve
-nothing. A refusal displays each command with its redacted,
-bounded declared environment. Every identity serialized into `expected_launch`
-has exactly one displayed command and one displayed environment, so the operator
-can approve only launch content that was rendered. Cached recommendation seeding
-can add a stub route, but it does not approve the launch behind that name.
+nothing.
+
+The operator's per-server Shared switch IS the approval. Turning it on
+(`POST /api/mcp-gateway/servers/stub`, or the `mcp.share` change card, which
+posts the same request) resolves every launch the name runs right then and
+records exactly those fingerprints, then stubs the server, in one request; no
+launch has to be displayed first and `expected_launch` is optional (when sent,
+a launch that moved is still refused). The reasoning: the same command already
+runs, unapproved, inside every session, so sharing it widens nothing that runs.
+While the switch stays on, a launch that changes (a version bump, an edited
+spec) is approved on the next rewrite pass and logged with the audit reason
+`opted in to sharing, launch changed`; the launches nothing runs any more are
+retired, so bumps never fill the per-server cap. The record stays exact
+(command and environment digests), never a wildcard. Following needs an
+existing approval: a name that reached the roster without the switch (cached
+recommendation seeding, a hand edit) is still refused as
+`added_outside_dashboard` until one tap records it. The leakage classes are
+refused outright, by the endpoint and by the card, and are never followed:
+credential vending (`creds-agent`, `local-creds-agent-mcp`),
+`POOLING_REQUIRES_TENANT_NONCE`, and `kirocrew-computer`
+(`launch_approval.share_refusal`). A launch set over the store's caps is refused
+as `launch_over_cap`.
 
 The generated `mcp-gateway/agents/` overlays and `mcp-gateway/stubs/` sidecars
 are not sealed: gatewayd checks the command and environment they carry against

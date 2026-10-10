@@ -111,6 +111,42 @@ _DECLARED_ENV_REFERENCE = re.compile(r"^\$\{[A-Za-z_][A-Za-z0-9_]*\}$")
 #: handlers, the gateway's post-rewrite save) runs in the gateway process.
 _STORE_LOCK = threading.Lock()
 
+#: Servers that hand each caller its own credentials. One shared copy would hand
+#: every chat the same identity, so sharing is refused outright.
+CREDENTIAL_VENDING_SERVERS: frozenset[str] = frozenset({"creds-agent", "local-creds-agent-mcp"})
+
+#: Why a server can never be shared, as one stable code per class.
+SHARE_REFUSED_CREDENTIALS = "credential_vending"
+SHARE_REFUSED_TENANT_NONCE = "needs_tenant_nonce"
+SHARE_REFUSED_COMPUTER = "computer_use"
+
+
+def share_refusal(name: str) -> str | None:
+    """The code naming why *name* can never be shared, or ``None``.
+
+    These are the leakage classes: a shared copy of any of them would let one
+    chat see another chat's credentials or desktop. They are refused whatever
+    the operator approved, because no approval makes that safe. What a server
+    RUNS is not a reason here -- the same command already runs, unapproved,
+    inside every session.
+    """
+    # Deferred: ``mcp_caller`` imports half the gateway at module scope.
+    from kiro_crew.mcp_caller import POOLING_REQUIRES_TENANT_NONCE
+    from kiro_crew.platform.governance import CU_MCP_SERVER
+
+    if name in CREDENTIAL_VENDING_SERVERS:
+        return SHARE_REFUSED_CREDENTIALS
+    if name == CU_MCP_SERVER:
+        return SHARE_REFUSED_COMPUTER
+    if name in POOLING_REQUIRES_TENANT_NONCE:
+        return SHARE_REFUSED_TENANT_NONCE
+    return None
+
+
+#: Audit reason for a pair admitted because the operator opted the server in to
+#: sharing and its launch then changed.
+FOLLOW_AUDIT_REASON = "opted in to sharing, launch changed"
+
 #: Why a launch was refused, as surfaced to the dashboard.
 REFUSED_UNAPPROVED = "added_outside_dashboard"
 REFUSED_CHANGED = "changed_needs_reapproval"
@@ -246,6 +282,20 @@ class LaunchApprovals:
     #: Set when an environment sidecar failed to publish during this pass.
     #: Rebound pairs depend on that content, so a save withholds all of them.
     rebind_incomplete: bool = False
+    #: Stems the operator opted in to sharing that may be shared at all (see
+    #: :func:`share_refusal`). Set by the rewrite pass from the stub roster. A
+    #: launch of one of these that is not approved yet is approved on the spot:
+    #: the operator's switch says "share this server", and the command behind it
+    #: already runs unapproved inside every session, so asking again on every
+    #: version bump adds a step and no protection. Never persisted.
+    follow_stems: frozenset[str] = frozenset()
+    #: Fingerprints this pass approved through :attr:`follow_stems`
+    #: (stem -> set). A save makes them the server's approved set, replacing
+    #: the launches nothing runs any more.
+    followed: dict[str, set[str]] = field(default_factory=dict)
+    #: Every fingerprint this pass admitted, approved before or not (stem -> set).
+    #: What a followed server's save keeps from its earlier approvals.
+    live_fps: dict[str, set[str]] = field(default_factory=dict)
     #: Whether this snapshot already reported reaching ``_MAX_SERVER_RECORDS``.
     _record_cap_reported: bool = field(default=False, repr=False, compare=False)
 
@@ -380,10 +430,24 @@ class LaunchApprovals:
             and fingerprint in self.approved.get(stem, ())
             and not self.admits_launch(stem, command_hash, derived_env_hash)
         )
+        # Follow only a server the operator turned on themselves: their switch
+        # wrote an approval for it. A name that reached the roster another way
+        # (seeding, a hand-edited config) has none, so it still waits for one tap.
+        follow = (
+            not self.probe
+            and not managed
+            and not rebind
+            and stem in self.follow_stems
+            and bool(self.approved.get(stem))
+            and not (
+                fingerprint in self.approved.get(stem, ())
+                and self.admits_launch(stem, command_hash, derived_env_hash)
+            )
+        )
         additions: list[tuple[Mapping[str, Collection[Any]], Collection[Any]]] = []
         if not self.probe:
             additions.append((self.launch_identities, (identity,)))
-        if self.probe or managed or rebind:
+        if self.probe or managed or rebind or follow:
             additions.extend(
                 (
                     (self.approved, (fingerprint,)),
@@ -417,14 +481,33 @@ class LaunchApprovals:
         if fingerprint in self.approved.get(stem, ()) and self.admits_launch(
             stem, command_hash, derived_env_hash
         ):
+            self.live_fps.setdefault(stem, set()).add(fingerprint)
             return True
         if managed:
             self._record(stem, name, fingerprint, derived_env_hash, launch, env)
+            return True
+        if follow:
+            # Exact, like every other approval: this fingerprint and this pair,
+            # nothing wider. Only the operator step is skipped.
+            self._record(stem, name, fingerprint, derived_env_hash, launch, env)
+            self.followed.setdefault(stem, set()).add(fingerprint)
+            self.live_fps.setdefault(stem, set()).add(fingerprint)
+            if display_complete and command_display is not None and env_display is not None:
+                self.approved_displays.setdefault(stem, {})[identity] = (
+                    command_display,
+                    env_display,
+                )
+            logger.warning(
+                "mcp launch approvals: %s is opted in to sharing; recorded its new launch %s",
+                _bounded_name(name),
+                identity,
+            )
             return True
         if rebind:
             self.rebind_base.setdefault(stem, frozenset(self.approved_pairs.get(stem, ())))
             self._record(stem, name, fingerprint, derived_env_hash, launch, env)
             self.rebound.setdefault(stem, {})[identity] = fingerprint
+            self.live_fps.setdefault(stem, set()).add(fingerprint)
             if display_complete and command_display is not None and env_display is not None:
                 self.approved_displays.setdefault(stem, {})[identity] = (
                     command_display,
@@ -983,6 +1066,14 @@ def save_pass(approvals: LaunchApprovals, path: Path | None = None) -> bool:
             name = approvals.names.get(stem, stem)
             final_fps = before | fps
             final_pairs = (before_pairs | captured_pairs) - retired
+            if stem in approvals.followed and approvals.full_pass and not approvals.live_incomplete:
+                # The server follows its current launch, so what it ran before
+                # and runs no more is retired here. Without this every version
+                # bump would add a fingerprint until the per-server cap refused
+                # the server outright.
+                live_pairs = set(approvals.launch_identities.get(stem, {}))
+                final_fps = (before & approvals.live_fps.get(stem, set())) | fps
+                final_pairs = (before_pairs & live_pairs) | captured_pairs
             if not current._admission_allowed(
                 stem,
                 name,
@@ -1057,8 +1148,14 @@ def _captured_by_reason(approvals: LaunchApprovals) -> dict[str, dict[str, set[s
     by_reason: dict[str, dict[str, set[str]]] = {}
     for stem, fps in approvals.captured.items():
         rebound = set(approvals.rebound.get(stem, {}).values())
+        followed = approvals.followed.get(stem, set())
         for fingerprint in fps:
-            reason = REBIND_AUDIT_REASON if fingerprint in rebound else "managed launch"
+            if fingerprint in rebound:
+                reason = REBIND_AUDIT_REASON
+            elif fingerprint in followed:
+                reason = FOLLOW_AUDIT_REASON
+            else:
+                reason = "managed launch"
             by_reason.setdefault(reason, {}).setdefault(stem, set()).add(fingerprint)
     return by_reason
 

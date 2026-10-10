@@ -922,37 +922,40 @@ without a matching fingerprint stays on the session's unpooled, sandboxed launch
 path. A queued cold spawn reloads the store after admission and resolves the same
 command and environment identity again immediately before the fork, so revoking
 an approval while it waits prevents the process from starting. A stub with no
-recorded approval needs one in **Developer → MCP Management** before it pools. Cached recommendation
+recorded approval needs one tap in **Developer → MCP Management** before it pools. Cached recommendation
 seeding may add a stub route, but it grants no launch approval; the seeded
-row stays on the session-sandboxed path until the operator reviews it.
+row stays on the session-sandboxed path until the operator taps it.
 
-The MCP Management toggle resolves the launch at the time of the operator's
-choice. Every `stub: true` is a compare-and-set on a displayed launch, the first
-approval of a name included: the UI reads
-`GET /api/mcp-gateway/servers/launch?name=<name>`, which returns `name`,
-`commands`, `envs`, `complete` and, only when the display is complete,
-`expected_launch`. This display-safe, bounded GET follows the other dashboard
-read routes and does not require owner identity; the POST that records the choice
-remains owner-only. `POST /api/mcp-gateway/servers/stub` refuses a missing token
-with 409 `expected_launch_required`, a truncated display with 409
-`launch_display_incomplete`, and a token that no longer matches the resolution
-with 409 `launch_changed_since_display`. A batch `stub: true` returns 400
+The MCP Management switch is the approval. `POST /api/mcp-gateway/servers/stub`
+with `stub: true` resolves every launch the name runs at the moment of the tap,
+records exactly those command/effective-environment fingerprints, and stubs the
+server, in one request; the `mcp.share` change card sends the same request. No
+launch is displayed first: the same command already runs, unapproved, inside
+every session, so sharing it widens nothing that runs. `expected_launch` is
+optional; when a caller sends it, a launch that no longer matches returns 409
+`launch_changed_since_display`. The leakage classes return 409 `share_refused`
+(`launch_approval.share_refusal`: credential vending, `POOLING_REQUIRES_TENANT_NONCE`,
+`kirocrew-computer`), and a launch set over the store's caps returns 409
+`launch_over_cap`. A batch `stub: true` returns 400
 `batch_stub_requires_individual`; batch `stub: false` is accepted. Turning a stub
 off revokes the approval first, and restores it when the config write does not
-commit. The approval also stores the redacted, bounded display of the approved
-launch, so a `changed_needs_reapproval` refusal carries `approved_commands` and
-`approved_envs` beside the new `commands` and `envs`; an approval recorded
-without a display omits both fields. A refused row exposes each display-only command argv with its redacted
-declared environment. Both displays are scrubbed and bounded before they enter
-the refusal record, and status polling only reads that record; it does not rebuild
-or resolve agent specs. Every identity serialized into `expected_launch` has
-exactly one displayed command and one displayed environment, so an approval
-covers only launch content the operator saw. Selecting re-approve sends back the
-stored command/effective-environment pair for the row. The handler compares it
-with both the stored refusal and a fresh resolution before any write; a changed
-launch returns 409 and preserves both stores. A matching launch replaces the
-fingerprint and clears the refusal. A changed command, arguments, or declared
-environment requires the same re-approve flow. The gateway-owned `mcp/resolved/`
+commit. While a server stays opted in and holds an approval, a launch that
+changes is approved on the next rewrite pass (`LaunchApprovals.follow_stems`),
+logged with the audit reason `opted in to sharing, launch changed`, and the
+launches nothing runs any more are retired. The approval stores the redacted,
+bounded display of what it covers; `GET /api/mcp-gateway/servers/launch?name=<name>`
+returns it for the page's collapsed Details.
+
+The settings `mcp.json` servers the rewriter injects into every agent get their
+declared `env` through `env.emit_env`, the same expansion an agent spec that
+declares the server gets, so one server is one launch identity and one shared
+backend rather than two with different `PATH`s.
+
+The rows endpoint reports `share_blocked` (the refusal class or null) and
+`saves_bytes`: what sharing would save, MEASURED from this host's process table
+(`mcp_gateway.direct_copies`: every process whose `argv[0]` or `argv[1]` is the
+server's absolute command, with its children), or null when there is no reading.
+The page shows "Saves memory" with no number then; no figure is ever estimated. The gateway-owned `mcp/resolved/`
 store is sealed read-only in
 session sandboxes because its record chooses the entry point substituted for an
 approved npm launcher. Resolve-once therefore gives sandboxed npm a private

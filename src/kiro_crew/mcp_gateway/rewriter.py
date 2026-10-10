@@ -46,7 +46,7 @@ from kiro_crew import __version__, platform_compat
 from kiro_crew.agent_spec_format import iter_agent_spec_files
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.paths import config_dir
-from kiro_crew.env import mcp_search_path, resolved_command_casing, spec_path_key
+from kiro_crew.env import emit_env, mcp_search_path, resolved_command_casing, spec_path_key
 from kiro_crew.mcp_cleanup import (
     KIROCREW_BIN_MCP_SERVERS,
     mcp_entry_is_muted,
@@ -66,6 +66,8 @@ from kiro_crew.mcp_gateway.launch_approval import (
     env_fingerprint,
     filter_target_env,
     launch_fingerprint,
+    share_refusal,
+    target_stem,
 )
 from kiro_crew.mcp_gateway.manager import is_credential_env_key
 from kiro_crew.mcp_gateway.read_limits import config_read_buffer_limit
@@ -1493,6 +1495,31 @@ def _rewrite_single_spec(
     return new_spec, wrapped
 
 
+def _with_emitted_env(settings_spec: dict[str, Any]) -> dict[str, Any]:
+    """*settings_spec* with each server's ``env`` normalized the way agent specs are.
+
+    An agent that declares a settings server gets it through
+    ``agent_materialization.mcp_sources``, which runs its ``env`` through
+    :func:`kiro_crew.env.emit_env` -- so a declared ``PATH`` arrives expanded
+    with the gateway's own search path. The copy injected into every OTHER agent
+    is read straight from ``settings/mcp.json``, with the short ``PATH`` its
+    author wrote. The two copies then hash as two different launches: the same
+    server splits into two shared backends, and the dashboard lists the same
+    command twice with two environments. Expanding here, through the same
+    function, makes them one launch. Returns a new dict; *settings_spec* is not
+    mutated.
+    """
+    servers = settings_spec.get("mcpServers")
+    if not isinstance(servers, dict):
+        return settings_spec
+    out_servers: dict[str, Any] = {}
+    for name, entry in servers.items():
+        if isinstance(entry, dict) and isinstance(entry.get("env"), dict):
+            entry = {**entry, "env": emit_env(entry["env"])}
+        out_servers[name] = entry
+    return {**settings_spec, "mcpServers": out_servers}
+
+
 def _injectable_settings_servers(
     settings_spec: dict[str, Any],
     stub_servers: frozenset[str],
@@ -2398,7 +2425,11 @@ def rewrite_agents(
             return cached
     if approvals is not None:
         approvals.full_pass = True
-
+        # The operator's switch is the approval: a shareable opted-in server
+        # follows its current launch instead of waiting to be approved again.
+        approvals.follow_stems = frozenset(
+            target_stem(n) for n in stub_set if share_refusal(n) is None
+        )
     written: set[str] = set()
     written_sidecars = _SidecarLedger()
     results: dict[str, int] = {}
@@ -2427,7 +2458,7 @@ def rewrite_agents(
             loaded = loads_user_json(kiro_settings_json.read_text(encoding="utf-8"))
             if isinstance(loaded, dict):
                 settings_poolable = _injectable_settings_servers(
-                    loaded, stub_set,
+                    _with_emitted_env(loaded), stub_set,
                     pooling_enabled=pooling_enabled,
                     forward_env=forward_env,
                     identity_keys=identity_keys,
