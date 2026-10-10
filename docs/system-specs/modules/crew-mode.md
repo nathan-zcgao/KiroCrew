@@ -888,7 +888,13 @@ badge label, but the "runs without asking" acknowledgement rides a separate `wid
 so a capabilities card that both launches code and expands auto-approval reads `code_exec`
 and still requires the acknowledgement; an old signed record missing the flag derives it
 from its capability impact. A setting whose value is a command this machine runs
-(`dashboard.terminal.shell`) is `code_exec` whatever its before/after. A reminder that runs once is a `schedule.create` card with `at` (a local
+(`dashboard.terminal.shell`) is `code_exec` whatever its before/after. An `mcp.share`
+card (`{server, shared}`) shares one MCP server across chats in one press through the
+same `POST /api/mcp-gateway/servers/stub` the Settings switch sends, so it records the
+exact launch and stubs the server in one request; it is `normal` (sharing widens nothing
+that runs) and its Undo posts the previous value. It refuses the leakage classes
+(`share_refused`, one line naming the class) and shows a `Saves` row only when the
+gateway measured the per-chat copies running now. A reminder that runs once is a `schedule.create` card with `at` (a local
 ISO-8601 date-time, no offset) instead of `cron_expr`. `search_docs` searches and pages
 through `kiro_crew/docs/*.md` only, by the directory's own listing, and `find_ui` searches
 the packaged dashboard location index
