@@ -243,7 +243,14 @@ def _url_payload_command(n: int) -> str:
 #: deny-exception check both passes of ``is_denied`` share, which reads a deny
 #: exception through kiro-cli's one ``Running: `` title prefix so a shell title
 #: earns exactly its command's carve-out. No glob, verb or eligibility test moved.
-_PACKAGE_LINE_BUDGET = 28_844
+#:
+#: Raised again, from 28,844, for ``rm_floor``: the argv floor that reads a
+#: recursive-force ``rm`` in any flag or home spelling against the root or home dir
+#: itself, with a word split on the shared quote state machine that drops comments,
+#: heredoc bodies and redirections, per-occurrence reachability that skips printed,
+#: single-quoted, commented and quoted-heredoc substitutions,
+#: and its gated branch at the end of ``is_denied``. No pattern moved.
+_PACKAGE_LINE_BUDGET = 29_240
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second
