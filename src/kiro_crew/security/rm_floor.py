@@ -348,7 +348,7 @@ def _rm_wipe_targets(text: str) -> "set[str]":
     lowercased copy would read an unrelated ``$home`` variable as home.
     """
     home = os.path.expanduser("~")
-    homes = frozenset({_folded(home), _folded(home.replace("\\", ""))}) - {"."}
+    homes = frozenset({_folded(home), _folded(home.replace("\\", ""))}) - {".", "~"}
     frames = _shell._shell_payload_walk(text)
     scans = [_scan(source) for source, _tokens in frames]
     hits = [_frame_targets(scan, homes) for scan in scans]

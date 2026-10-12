@@ -11282,6 +11282,15 @@ class TestRecursiveForceRmFloor:
         assert is_denied("rm -fr /tmp/HOME") is None
         assert is_denied("rm -fr /tmp/Home/") is None
 
+    def test_an_unresolved_home_does_not_make_a_literal_tilde_the_home(self, monkeypatch):
+        from kiro_crew.security import rm_floor
+
+        # With HOME unset and no passwd entry, ``expanduser`` hands back ``~`` itself.
+        monkeypatch.setattr(rm_floor.os.path, "expanduser", lambda path: path)
+        assert is_denied("rm -fr '~'") is None
+        assert is_denied("rm -fr ./~") is None
+        assert is_denied("rm -fr ~") is not None
+
     def test_the_floor_reports_the_catalog_row(self):
         reason = is_denied("rm -fr /")
         assert reason is not None
