@@ -454,6 +454,10 @@ _LAZY_IMPORTS = {
     "kiro_crew.config.live": "ConfigChange",
     "kiro_crew.config.resolution": "DEGRADED_WHOLE_CONFIG",
     "kiro_crew.connections.warm": "scavenge_warm_mint_artifacts shutdown_warm_mint",
+    # The manager rebuild the session restore runs at boot. Lazy for the reason every
+    # entry here is: ``session_control`` is reached from the boot path, and importing it
+    # at module scope would pull the verb module into the server's own import.
+    "kiro_crew.dashboard": "_session_control",
     "kiro_crew.dashboard.chat": "_run_chat",
     "kiro_crew.dashboard.handlers": "wf_handlers work_ledger",
     "kiro_crew.dashboard.handlers.ask_question": (
@@ -512,7 +516,7 @@ def test_the_lazy_imports_stay_inside_the_functions_that_need_them() -> None:
                     for alias in node.names:
                         local.setdefault(alias.asname or alias.name, set()).add(alias.name)
     assert local == {name: {module} for name, module in expected.items()}
-    assert len(expected) == 81
+    assert len(expected) == 82
 
 
 def test_a_star_import_carries_the_moved_public_names(tmp_path: Path) -> None:
@@ -1418,6 +1422,7 @@ _DASHBOARD_BOOT = tuple("""
     _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred
     _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred
     _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred
+    _deferred
     register_all subprocess_executor subprocess_executor subprocess_executor
     subprocess_executor subprocess_executor subprocess_executor _register_deploy_routes
     setup_knowledge_routes setup_weixin_routes setup_feedback_routes
@@ -1486,6 +1491,7 @@ _API_BOOT = tuple("""
     _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred
     _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred
     _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred
+    _deferred
     _register_deploy_routes _register_stt_hooks _register_own_host_warm
     _register_config_watch _register_prevent_sleep_shutdown
     _register_listener_guard_shutdown _register_browser_install_cleanup
@@ -1699,8 +1705,8 @@ def _routes(app: web.Application) -> list[tuple[str, str, str]]:
 #: SHA-256 of the MCP route table's ``"<method> <path> <handler>"`` rows in
 #: registration order, and their count. The table is shared by both entrypoints, so a
 #: route added to it on purpose updates these with it.
-_MCP_TABLE_ROWS = 281
-_MCP_TABLE_DIGEST = "62e2119918cf293bddece697d6e08f5d585e6231765a63e7979a2c2796c808b1"
+_MCP_TABLE_ROWS = 282
+_MCP_TABLE_DIGEST = "36fcd9b7cb024809617f2897f00d30d85055c42b97cc1ee850543f50ace47bd8"
 
 
 def test_the_mcp_route_table_keeps_its_rows_and_order() -> None:
