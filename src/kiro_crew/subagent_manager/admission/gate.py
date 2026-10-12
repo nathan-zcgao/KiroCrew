@@ -956,6 +956,7 @@ class _GateMixin(ManagerComponent):
             "bare": bare,
             "keep": keep,
             "execution_context": execution,
+            "cwd": resolved_cwd,
         }
         if _dispatch_now:
             # The claim re-entry registers at the price its first half CHECKED;
@@ -1517,7 +1518,6 @@ class _GateMixin(ManagerComponent):
             approval_mode=approval_mode or "",
             silent=silent,
             max_turns=max_turns,
-            cwd=resolved_cwd,
             batch_id=batch_id,
             batch_total=max(0, int(batch_total)),
             conversation_key=conversation_key,

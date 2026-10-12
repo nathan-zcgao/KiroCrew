@@ -4149,6 +4149,12 @@ class RunEventCoordinator(ManagerComponent):
         where the override reaches the provider factory. Eligibility is the
         backend's opt-in membership (``is_session_sharing_eligible``); nothing
         here names a harness. *cfg* is a config the caller already loaded.
+
+        A run whose ``cwd`` binds another AWS profile (``aws.project_profiles``)
+        than the binding set on the parent also takes the dedicated arm, where
+        the spawn sets the run's own profile: the shared arm would run it with
+        the parent's. Only a real ``True`` from that comparison rules sharing
+        out, so a double that cannot answer it keeps the decision above.
         """
         kind = _selection_kind(info)
         eff_model = info.model or _subagent_default_model(cfg) or info.routed_model
@@ -4162,6 +4168,10 @@ class RunEventCoordinator(ManagerComponent):
             and not (eff_model or eff_effort)
             and self._manager._should_use_session_sharing(info)
         )
+        if shared:
+            differs = getattr(self._manager._sessions, "aws_profile_differs_from_parent", None)
+            if differs is not None and differs(info.parent_session_key, info.cwd) is True:
+                shared = False
         return _SharingPlan(eff_model, eff_effort, shared)
 
     async def _ensure_dedicated_start_priced_impl(self, info: SubagentInfo) -> None:

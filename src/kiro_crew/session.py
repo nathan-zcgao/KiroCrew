@@ -1091,6 +1091,12 @@ class _Session:
     # factory's default backend). Carried by ``allocation_identity`` so a reset
     # successor or a compaction restart starts on the same harness.
     backend_override: str | None = None
+    # The profile ``aws.project_profiles`` set on this session's process at its
+    # cold start; ``None`` when the binding set none (no map, an unbound
+    # directory, a caller that chose its own profile, a pooled process). A
+    # subagent shares this process only when its own directory binds the same
+    # profile (``aws_profile_differs_from_parent``).
+    aws_project_profile: str | None = None
     # True while the lease is held for a LIFETIME rather than a turn -- see
     # ``session_lifecycle._turn_in_flight``, which is what asks.
     lifecycle_lease: bool = False
@@ -2152,6 +2158,8 @@ class SessionManager:
         "agents",
         "workspaces",
         "default_workspace",
+        # aws.project_profiles is read off ``_cfg`` at each spawn.
+        "aws",
     )
     _FACTORY_CONFIG_PATHS: tuple[str, ...] = (
         "agent.model",
@@ -2449,6 +2457,10 @@ class SessionManager:
     def is_session_sharing_eligible(self, parent_session_key: str) -> bool:
         """Return whether the exact parent can share a runtime."""
         return self._allocation_boundary().is_session_sharing_eligible(parent_session_key)
+
+    def aws_profile_differs_from_parent(self, parent_session_key: str, cwd: str) -> bool:
+        """Whether a session in *cwd* binds another AWS profile than the parent's process."""
+        return self._allocation_boundary().aws_profile_differs_from_parent(parent_session_key, cwd)
 
     async def _fill_warm_pool(self) -> None:
         """Delegate warm-provider creation."""

@@ -339,8 +339,12 @@ so every later admission charges a row at the price it was admitted at:
   process it skips, never below `_SHARED_START_MIN_GB`
   (`_shared_start_price_gb`), and flagged `_start_priced_shared`. Whether it will
   share is the run's own decision, `_sharing_plan`: template execution, not
-  `keep`, `_should_use_session_sharing`, and no per-spawn or `agent.role_models` /
-  `agent.role_efforts` pin for `subagent`. `_should_use_session_sharing` in turn
+  `keep`, `_should_use_session_sharing`, no per-spawn or `agent.role_models` /
+  `agent.role_efforts` pin for `subagent`, and no AWS profile split: a run whose
+  `cwd` binds another `aws.project_profiles` profile than the binding set on the
+  parent (`aws_profile_differs_from_parent`, a real `True` only) starts dedicated so
+  its spawn sets its own profile ([config](config.md) § Project AWS profiles). The
+  admission probe carries the run's `cwd` for that comparison. `_should_use_session_sharing` in turn
   requires no `_force_dedicated` (a recovery respawn), no member execution context
   (`execution_context.member_id`, whose capability and prompt documents are
   prepared at launch), `agent.session_sharing` on, no per-spawn `model` /
