@@ -2324,8 +2324,22 @@ class CronService:
                     raise CronPendingMismatch("active grant changed concurrently")
                 if expect_active_pin is not None and job.secret_env_pin != expect_active_pin:
                     raise CronPendingMismatch("active grant pin changed concurrently")
+                # The cached record is published to every reader the moment it
+                # is mutated (``list_jobs`` hands out these very objects), so a
+                # save that fails must put it back: otherwise the cache says the
+                # update landed while crons.json still holds the old values, and
+                # a caller that compares the two -- the app bridge's manifest
+                # stamp -- stops retrying a write that never happened. Restored
+                # onto the SAME object (identity is what readers hold), and the
+                # reload-on-change in ``_sync_for_write`` cannot do this, since a
+                # failed save changes nothing on disk.
+                before = copy.copy(job)
                 apply_job_update(job, kwargs, chat_folder_out)
-                self._save()
+                try:
+                    self._save()
+                except BaseException:
+                    job.__dict__.update(before.__dict__)
+                    raise
                 logger.info("Updated cron job %s", job_id)
                 return job
         return None
