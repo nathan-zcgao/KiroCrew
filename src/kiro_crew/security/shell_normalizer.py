@@ -1644,6 +1644,30 @@ def _substitution_bodies(text: str) -> "list[str]":
     return bodies
 
 
+def _arith_int_literal_repl(match: "re.Match[str]") -> str:
+    """The decimal spelling bash prints for one arithmetic integer literal."""
+    lit = match.group(1)
+    magnitude = lit.lstrip("-")
+    try:
+        if magnitude.lower().startswith("0x"):
+            value = int(lit, 16)
+        elif magnitude.startswith("0") and len(magnitude) > 1:
+            # bash reads a leading zero as octal; an invalid octal digit is a
+            # bash error (no command runs), so the spelling is left alone.
+            value = int(lit, 8)
+        else:
+            value = int(lit, 10)
+        # ``str`` stays INSIDE the try (round-18): hex/octal ``int`` uses a
+        # power-of-two base exempt from the interpreter's digit cap, so a
+        # ~3600-digit hex literal converts -- but its decimal ``str`` IS
+        # capped and would raise straight through ``is_denied``, aborting
+        # the evaluation.  Keeping the original spelling instead composes
+        # with the target-position rule into a fail-closed deny.
+        return str(value)
+    except ValueError:
+        return match.group(0)
+
+
 def _redirect_glue_point(word: str) -> "int | None":
     """Index where an OUTPUT redirect glued to the END of another word begins, else None.
 
