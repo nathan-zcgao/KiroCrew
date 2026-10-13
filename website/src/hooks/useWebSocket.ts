@@ -46,6 +46,7 @@ import { useBundleReload, handleUpdateProgress } from './websocket/bundleReload'
 import {
   handleArtifactUpdate,
   handleCredentialRedactionChanged,
+  MEMBER_DASHBOARD_QUERY_PREFIX,
   handleDashboardMoved,
   handleMemberProjection,
   handleMembersSubscribed,
@@ -338,18 +339,15 @@ export function useWebSocket() {
             break
           }
           case 'panel_published': {
-            // A crew replaced its webview. The drawer's query sets no finite
-            // staleTime (the client's default is Infinity, freshness by push), so
-            // without this the operator kept looking at the first snapshot read
-            // when the drawer opened -- and the "23m ago" chip froze with it.
-            //
-            // Invalidated by SLUG PREFIX, so it reaches the ['member-panel', slug,
-            // member] key without the frame having to carry the crew's name. The
-            // frame is slug-only on purpose: the ownership digest must not reach a
-            // client, and the refetch re-asks the server, which re-checks ownership.
+            // A crew published new panel data, which a dashboard page may read.
+            // Invalidated by SLUG PREFIX, so it reaches the ['member-dashboard',
+            // slug, member] key without the frame having to carry the crew's
+            // name. The frame is slug-only on purpose: the ownership digest must
+            // not reach a client, and the refetch re-asks the server, which
+            // re-checks ownership.
             const slug = String((data as { slug?: unknown }).slug || '')
             if (slug) {
-              queryClient.invalidateQueries({ queryKey: ['member-panel', slug] })
+              queryClient.invalidateQueries({ queryKey: [MEMBER_DASHBOARD_QUERY_PREFIX, slug] })
             }
             break
           }
