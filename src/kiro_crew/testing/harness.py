@@ -76,6 +76,17 @@ _LOGGER = logging.getLogger(__name__)
 # Override via ``KIROCREW_HARNESS_READY_TIMEOUT``.
 DEFAULT_READY_TIMEOUT = 60.0
 
+# Extra seconds granted to a subprocess that is alive but has produced no output
+# at all when the ready-line timeout fires.  The no-output signal identifies the
+# cold-import phase on a freshly provisioned CI runner: Python is still reading
+# the kiro_crew modules off disk for the first time, compiling .pyc files, and
+# the gateway's own boot-time logging has not started yet.  0 = disabled
+# (default); set ``KIROCREW_HARNESS_COLD_IMPORT_GRACE`` in the CI environment
+# to enable.  A subprocess that has already emitted any stderr or stdout output
+# has passed the import phase and is NOT granted this grace — it either boots
+# or it hangs, and the original timeout applies.
+DEFAULT_COLD_IMPORT_GRACE = 0.0
+
 # How long to wait between SIGTERM and SIGKILL during teardown. Gateway's
 # graceful-shutdown budget is 10 s internally; 5 s here is enough for the
 # common case (no pending tool calls, no hung MCP servers) and bounds the
@@ -434,6 +445,7 @@ def _wait_for_ready_line(
     timeout: float,
     stderr_buffer: list[bytes],
     pump: Optional[_StdoutPump] = None,
+    cold_import_grace: float = DEFAULT_COLD_IMPORT_GRACE,
 ) -> dict[str, Any]:
     """Read stdout until we see ``KIROCREW_READY:{...}`` or hit the timeout.
 
@@ -452,6 +464,15 @@ def _wait_for_ready_line(
     ``pump`` lets the caller keep the reader alive past this function (see
     ``spawn_feature_gateway``, which hands it off to the bounded drain). When
     omitted, one is created and owned here.
+
+    ``cold_import_grace`` gives the subprocess extra time when it is alive but
+    has produced absolutely no output (stdout or stderr) at the primary
+    deadline.  No output is the signal for the cold-import phase: Python is
+    still reading the kiro_crew modules off disk on a freshly provisioned CI
+    runner, before the gateway's own logging has started.  The grace is granted
+    at most ONCE per call; a subprocess that is still silent at the grace
+    deadline fails normally.  Defaults to ``DEFAULT_COLD_IMPORT_GRACE`` (0 =
+    disabled); override per-call or via ``KIROCREW_HARNESS_COLD_IMPORT_GRACE``.
 
     Raises ``GatewaySpawnError`` on timeout, early exit, or malformed payload.
     Returns the parsed READY-line dict.
@@ -478,6 +499,8 @@ def _wait_for_ready_line(
         return None, buffer
 
     buf = b""
+    stdout_received: list[bytes] = []  # all chunks, for diagnostics
+    _grace_granted = False
     while True:
         if proc.poll() is not None:
             # Scan whatever the reader captures up to EOF before declaring the
@@ -493,10 +516,57 @@ def _wait_for_ready_line(
             )
         remaining = deadline - time.monotonic()
         if remaining <= 0:
+            alive = proc.poll() is None
+            has_any_output = bool(stdout_received) or bool(stderr_buffer)
+            if (
+                not _grace_granted
+                and cold_import_grace > 0
+                and alive
+                and not has_any_output
+            ):
+                # The subprocess is alive but has produced no output at all.
+                # This is the cold-import signature on a freshly provisioned CI
+                # runner: Python is still reading and compiling kiro_crew modules
+                # off disk before the gateway's logging even starts.  Grant the
+                # cold-import grace period once, logging a warning so the CI
+                # transcript shows why the wait extended.
+                _grace_granted = True
+                deadline = time.monotonic() + cold_import_grace
+                _LOGGER.warning(
+                    "gateway subprocess (pid %d) is alive after %.0fs with no "
+                    "stdout or stderr output — cold import phase (Python reading "
+                    "modules from disk for the first time); granting %.0fs grace "
+                    "period. Set KIROCREW_HARNESS_COLD_IMPORT_GRACE=0 to disable.",
+                    proc.pid,
+                    timeout,
+                    cold_import_grace,
+                )
+                continue
+            # Hard deadline reached: build a diagnostic that says whether the
+            # process is alive, what it wrote to stdout, and what state it is
+            # in — the previous stderr-only message left cold-import failures
+            # undiagnosable because stderr is empty for the whole import phase.
+            effective = timeout + (cold_import_grace if _grace_granted else 0)
+            stdout_so_far = b"".join(stdout_received).decode("utf-8", errors="replace")[-2000:]
+            stderr_so_far = _stderr_tail()
+            process_state = (
+                f"alive (pid {proc.pid})"
+                if alive
+                else f"exited {proc.returncode}"
+            )
+            cold_hint = (
+                "\n(no output from subprocess — likely still in cold import phase; "
+                "set KIROCREW_HARNESS_COLD_IMPORT_GRACE to grant extra time)"
+                if not has_any_output
+                else ""
+            )
             raise GatewaySpawnError(
                 f"gateway did not emit {READY_PREFIX} line within "
-                f"{timeout:.1f}s. Override with KIROCREW_HARNESS_READY_TIMEOUT.\n"
-                f"--- stderr (last) ---\n{_stderr_tail()}"
+                f"{effective:.1f}s [{process_state}]. "
+                f"Override with KIROCREW_HARNESS_READY_TIMEOUT.\n"
+                f"--- stderr (last) ---\n{stderr_so_far}\n"
+                f"--- stdout (so far) ---\n{stdout_so_far}"
+                f"{cold_hint}"
             )
         # Cap each wait at 0.5s so the deadline + poll() checks above run
         # frequently even if the subprocess goes silent.
@@ -510,6 +580,7 @@ def _wait_for_ready_line(
             # the exit check rather than failing here; the queue is empty from
             # now on, so each iteration sleeps its 0.5s instead of spinning.
             continue
+        stdout_received.append(chunk)
         payload, buf = _scan(buf + chunk)
         if payload is not None:
             return payload
@@ -1114,6 +1185,14 @@ def spawn_feature_gateway(
             env_timeout = os.environ.get("KIROCREW_HARNESS_READY_TIMEOUT")
             timeout = float(env_timeout) if env_timeout else DEFAULT_READY_TIMEOUT
 
+        # Cold-import grace: extra seconds for alive-but-silent subprocesses at
+        # the primary deadline.  Set KIROCREW_HARNESS_COLD_IMPORT_GRACE in CI to
+        # prevent the first gateway boot on a cold runner from timing out while
+        # Python is still reading modules off disk.  The harness default is 0
+        # (disabled) to keep unit-test timeouts short; CI sets it to 120.
+        cold_grace_env = os.environ.get("KIROCREW_HARNESS_COLD_IMPORT_GRACE")
+        cold_import_grace = float(cold_grace_env) if cold_grace_env else DEFAULT_COLD_IMPORT_GRACE
+
         env = harness_environment(home, src, skip_model_download=skip_model_download)
         if kiro_bin is not None:
             env["KIROCREW_KIRO_BIN"] = str(kiro_bin)
@@ -1191,7 +1270,11 @@ def spawn_feature_gateway(
         active = True
         try:
             ready = _wait_for_ready_line(
-                proc, timeout=timeout, stderr_buffer=stderr_buffer, pump=pump
+                proc,
+                timeout=timeout,
+                stderr_buffer=stderr_buffer,
+                pump=pump,
+                cold_import_grace=cold_import_grace,
             )
             if pump is not None:
                 pump.handoff()
@@ -1251,7 +1334,11 @@ def spawn_feature_gateway(
                 if pump is not None:
                     pump.start()
                 restarted = _wait_for_ready_line(
-                    proc, timeout=timeout, stderr_buffer=stderr_buffer, pump=pump
+                    proc,
+                    timeout=timeout,
+                    stderr_buffer=stderr_buffer,
+                    pump=pump,
+                    cold_import_grace=cold_import_grace,
                 )
                 if pump is not None:
                     pump.handoff()

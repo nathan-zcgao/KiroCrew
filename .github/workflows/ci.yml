@@ -3574,6 +3574,17 @@ jobs:
           # subprocess spawn and filesystem latency there are measurably slower,
           # the conditions #9172 addressed when a slow disk killed the gateway.
           KIROCREW_HARNESS_READY_TIMEOUT: ${{ matrix.os == 'windows-latest' && '180' || matrix.os == 'macos-15' && '90' || '60' }}
+          # Cold-import grace: the FIRST gateway spawn on a freshly provisioned
+          # runner reads every kiro_crew module off disk for the first time
+          # (compiling .pyc files), before the gateway's own logging starts.
+          # This produces the ``--- stderr (last) --- <empty>`` pattern in the
+          # 60 s timeout failure.  The grace period extends the wait for exactly
+          # that signature (alive process + zero output), converting a cold-start
+          # flake into a delayed pass without weakening the timeout for stuck
+          # processes.  120 s covers the worst measured cold import on ubuntu-latest
+          # with a fresh code checkout and full dependency install; subsequent
+          # boots in the same run reuse the .pyc files and complete in under 30 s.
+          KIROCREW_HARNESS_COLD_IMPORT_GRACE: "120"
         run: |
           set -o pipefail
           # Same as backend-test (#7296): the `python` matcher annotates any

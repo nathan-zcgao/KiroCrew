@@ -33,6 +33,7 @@ import pytest
 
 from kiro_crew import platform_compat
 from kiro_crew.testing.harness import (
+    DEFAULT_COLD_IMPORT_GRACE,
     DEFAULT_READY_TIMEOUT,
     READY_PREFIX,
     GatewayHandle,
@@ -209,6 +210,135 @@ def test_ready_line_raises_on_malformed_payload(bad_payload: str) -> None:
 
     msg = str(exc.value)
     assert "malformed" in msg or "expected dict" in msg or "missing required key" in msg
+
+
+# ── _wait_for_ready_line — cold-import grace ─────────────────────────────
+
+import threading as _threading  # noqa: E402 - local alias, avoids shadowing stdlib
+
+
+class _SleepyFakePopen:
+    """FakePopen that emits content after a delay, simulating cold import."""
+
+    def __init__(self, delay: float, content: bytes) -> None:
+        read_fd, self._write_fd = os.pipe()
+        self.stdout = os.fdopen(read_fd, "rb")
+        self.stderr = None
+        self.returncode: None = None
+        self.pid = 99997
+        t = _threading.Thread(target=self._writer_thread, daemon=True)
+        t._delay = delay  # type: ignore[attr-defined]
+        t._content = content  # type: ignore[attr-defined]
+        t._write_fd = self._write_fd  # type: ignore[attr-defined]
+        t.start()
+        self._thread = t
+
+    def _writer_thread(self) -> None:
+        t = _threading.current_thread()
+        time.sleep(t._delay)  # type: ignore[attr-defined]
+        try:
+            os.write(t._write_fd, t._content)  # type: ignore[attr-defined]
+            os.close(t._write_fd)  # type: ignore[attr-defined]
+        except OSError:
+            pass
+
+    def poll(self) -> None:
+        return self.returncode
+
+
+def test_ready_line_cold_import_grace_allows_late_emitter() -> None:
+    """Grace period: a process silent past base timeout boots under grace.
+
+    Root-cause regression test for test_gateway_boots_and_answers_health on
+    cold CI: the first gateway spawn has no .pyc files and spends >60 s reading
+    modules off disk before writing anything.  The cold-import grace period
+    detects the no-output signal and extends the wait.
+
+    Mutation test: remove the ``_grace_granted`` / ``cold_import_grace`` block
+    from ``_wait_for_ready_line`` -- this test raises GatewaySpawnError
+    instead of returning, because the 0.05 s base timeout fires before the
+    0.12 s READY line arrives.
+    """
+    ready_payload = (
+        f'{READY_PREFIX}{{"port": 1, "token": "t", "pid": 1, "home": "/h"}}'
+        + "\n"
+    )
+    # delay (0.12) > base_timeout (0.05) but < base_timeout + grace (0.35)
+    fake = _SleepyFakePopen(delay=0.12, content=ready_payload.encode())
+
+    result = _wait_for_ready_line(
+        fake,  # type: ignore[arg-type]
+        timeout=0.05,
+        stderr_buffer=[],
+        cold_import_grace=0.30,
+    )
+
+    assert result["port"] == 1
+    assert result["token"] == "t"
+
+
+def test_ready_line_cold_import_grace_not_applied_when_stderr_has_data() -> None:
+    """Grace is NOT granted when stderr has data -- subprocess is past imports."""
+    fake = _SleepyFakePopen(delay=9999, content=b"")  # never emits READY
+    stderr = [b"some warning\n"]
+
+    with pytest.raises(GatewaySpawnError) as exc:
+        _wait_for_ready_line(
+            fake,  # type: ignore[arg-type]
+            timeout=0.08,
+            stderr_buffer=stderr,
+            cold_import_grace=10.0,
+        )
+
+    msg = str(exc.value)
+    assert "did not emit" in msg
+    # No cold-import hint since stderr was non-empty.
+    assert "cold import phase" not in msg
+
+
+def test_ready_line_cold_import_grace_cold_hint_present_when_no_output() -> None:
+    """Timeout with zero output includes the cold-import diagnostic hint."""
+    fake = FakePopen([])
+    fake.returncode = None
+
+    with pytest.raises(GatewaySpawnError) as exc:
+        _wait_for_ready_line(
+            fake,  # type: ignore[arg-type]
+            timeout=0.05,
+            stderr_buffer=[],
+            cold_import_grace=0.0,  # disabled -- tests the hint text only
+        )
+
+    msg = str(exc.value)
+    assert "cold import phase" in msg
+    assert "KIROCREW_HARNESS_COLD_IMPORT_GRACE" in msg
+
+
+def test_ready_line_timeout_message_includes_stdout_and_process_state() -> None:
+    """Timeout error carries stdout content and process-alive state."""
+    fake = FakePopen([b"Starting up...\n", b"still going\n"])
+    fake.returncode = None
+
+    with pytest.raises(GatewaySpawnError) as exc:
+        _wait_for_ready_line(
+            fake,  # type: ignore[arg-type]
+            timeout=0.2,
+            stderr_buffer=[b"WARNING: config missing\n"],
+        )
+
+    msg = str(exc.value)
+    assert "did not emit" in msg
+    # Stdout content now in the error message.
+    assert "Starting up" in msg
+    # Process-alive state.
+    assert "alive" in msg
+    # Stderr still present.
+    assert "WARNING: config missing" in msg
+
+
+def test_default_cold_import_grace_is_zero() -> None:
+    """DEFAULT_COLD_IMPORT_GRACE is 0 so unit tests with short timeouts are unaffected."""
+    assert DEFAULT_COLD_IMPORT_GRACE == 0.0
 
 
 # ── parse_ready_line ────────────────────────────────────────────────────
